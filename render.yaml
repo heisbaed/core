@@ -4,7 +4,7 @@ services:
       repo: https://github.com/cinepro-org/core
       name: cinepro-core
       plan: free
-      autoDeploy: false
+      autoDeploy: true
       numInstances: 1
       buildCommand: npm install && npm run build
       startCommand: npm run start
@@ -12,15 +12,14 @@ services:
       envVars:
           - key: NODE_ENV
             value: 'production'
+          - key: HOST
+            value: '0.0.0.0'
+          - key: PUBLIC_URL
+            value: 'https://cineverse-core.onrender.com'
           - key: CACHE_TYPE
             value: 'memory'
-          - key: STREMIO_ADDON
-            value: 'true'
+          - key: TMDB_API_KEY
+            value: '2ef8d1daa387bd1a138fdeb6cac37850'
           - key: CORS_ORIGIN
             value: '*'
-          - key: MCP_ENABLED
-            value: 'true'
-          - key: TMDB_API_KEY
-            sync: false
-          - key: REDIS_PASSWORD
-            sync: false
+          
