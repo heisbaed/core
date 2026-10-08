@@ -19,7 +19,7 @@ services:
           - key: CACHE_TYPE
             value: 'memory'
           - key: TMDB_API_KEY
-            value: '2ef8d1daa387bd1a138fdeb6cac37850'
+            value: ''
           - key: CORS_ORIGIN
             value: '*'
           
