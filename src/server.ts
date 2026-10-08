@@ -1,41 +1,43 @@
-import { OMSSServer } from '@omss/framework';
+import { OMSSServer, ProxyService, type SourceResponse } from '@omss/framework';
 import 'dotenv/config';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { knownThirdPartyProxies } from './thirdPartyProxies.js';
 import { streamPatterns } from './streamPatterns.js';
-import { SourceService } from '@omss/framework';
-import { MemoryCacheService } from '@omss/framework';
-import { TMDBService } from '../node_modules/@omss/framework/dist/services/tmdb.service.js';
-import { StremioService } from '../node_modules/@omss/framework/dist/services/stremio.service.js';
-import { ProxyService } from '@omss/framework';
+import {
+    decodeProxyDataPreservingUrl,
+    isEpisodeSelection,
+    isTmdbId,
+    normalizeTvStreams,
+    withDeadline
+} from './tvCompatibility.js';
 
-// Global error handlers - prevent process exit on unhandled rejections
-process.on('unhandledRejection', (reason) => {
-    console.error('[FATAL] Unhandled Rejection:', reason);
-});
-process.on('uncaughtException', (error) => {
-    console.error('[FATAL] Uncaught Exception:', error);
-});
+// Framework 1.1.26 decodes an already decoded URLSearchParams value again.
+// Patch this public helper before SourceService is constructed so its validation
+// and deduplication preserve signed URL escapes as well as the TV response does.
+ProxyService.decodeProxyData = decodeProxyDataPreservingUrl;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 async function main() {
+    const serviceVersion = '1.0.1';
+    const port = Number(process.env.PORT ?? 3000);
+    const coreBaseUrl = (process.env.PUBLIC_URL ?? process.env.RENDER_EXTERNAL_URL ?? `http://localhost:${port}`).replace(/\/$/, '');
     const server = new OMSSServer({
         name: 'CinePro',
-        version: '1.0.0',
+        version: serviceVersion,
 
         // Network - bind to 0.0.0.0 for Render/production
         host: '0.0.0.0',
-        port: Number(process.env.PORT ?? 3000),
-        publicUrl: process.env.PUBLIC_URL,
+        port,
+        publicUrl: coreBaseUrl,
 
         // Cache (memory for dev, Redis for prod)
         cache: {
             type: (process.env.CACHE_TYPE as 'memory' | 'redis') ?? 'memory',
             ttl: {
-                sources: 60 * 60,
+                sources: 30 * 60,
                 subtitles: 60 * 60 * 24
             },
             redis: {
@@ -92,82 +94,89 @@ async function main() {
     const registry = server.getRegistry();
     await registry.discoverProviders(path.join(__dirname, './providers/'));
 
+    const adapterStatus = new Map<string, 'disabled' | 'configured' | 'ok' | 'broken'>();
+    for (const provider of registry.getProviders()) {
+        adapterStatus.set(provider.id, provider.enabled ? 'configured' : 'disabled');
+        if (!provider.enabled) continue;
+        const movieSources = provider.getMovieSources.bind(provider);
+        const tvSources = provider.getTVSources.bind(provider);
+        provider.getMovieSources = async (media) => {
+            try {
+                return await withDeadline(movieSources(media), 15000);
+            } catch (error) {
+                adapterStatus.set(provider.id, 'broken');
+                throw error;
+            }
+        };
+        provider.getTVSources = async (media) => {
+            try {
+                return await withDeadline(tvSources(media), 15000);
+            } catch (error) {
+                adapterStatus.set(provider.id, 'broken');
+                throw error;
+            }
+        };
+    }
+
     // Add compatibility endpoints for Cine-verse TV app BEFORE starting server
     const fastify = server.getInstance();
-    const cache = new MemoryCacheService();
-    const tmdbService = new TMDBService(process.env.TMDB_API_KEY!, cache, 24 * 60 * 60);
-    const proxyService = new ProxyService(streamPatterns);
-    const stremioService = new StremioService([], proxyService);
-    const sourceService = new SourceService(registry, cache, tmdbService, stremioService, { sources: 60 * 60, subtitles: 60 * 60 * 24 });
-    
+
     // Health check
-    fastify.get('/health', async () => ({ ok: true, serviceVersion: '1.0.0' }));
-    
+    fastify.get('/health', async () => ({
+        ok: true,
+        serviceVersion,
+        configuredProviders: registry.count,
+        enabledProviders: registry.getEnabledProviders().length
+    }));
+
     // Version endpoint with adapter status
-    fastify.get('/version', async () => {
-        const providers = registry.getProviders();
-        const adapters: Record<string, string> = {};
-        for (const p of providers) {
-            adapters[p.id] = 'ok';
-        }
-        return {
-            serviceVersion: '1.0.0',
-            adapters,
-            broken_sources: []
-        };
-    });
+    fastify.get('/version', async () => ({
+        serviceVersion,
+        adapters: Object.fromEntries(adapterStatus),
+        broken_sources: [...adapterStatus].filter(([, status]) => status === 'broken').map(([id]) => id)
+    }));
 
-    // Movie stream endpoint (compatibility)
-    fastify.get('/stream/movie/:tmdbId', async (request, reply) => {
-        const tmdbId = Number((request.params as any).tmdbId);
-        if (!tmdbId) return reply.code(400).send({ error: 'Invalid TMDB id' });
-        
-        const exclude = (request.query as any).exclude?.split(',').map((v: string) => v.trim()).filter(Boolean) || [];
-        
+    // Use the framework's public routes so TV and OMSS share one SourceService,
+    // one cache and the same provider validation instead of two divergent copies.
+    async function resolveTvStreams(url: string, excludeValue?: string) {
+        const result = await withDeadline(fastify.inject({ method: 'GET', url, headers: { accept: 'application/json' } }), 28000);
+        if (result.statusCode !== 200) {
+            return { statusCode: result.statusCode, body: result.json() };
+        }
+        const response = result.json<SourceResponse>();
+        const exclude = new Set((excludeValue ?? '').split(',').map((id) => id.trim()).filter(Boolean));
+        const availableStreams = normalizeTvStreams(response, coreBaseUrl);
+        // A provider can recover even when this client's last status check asked
+        // to exclude it. Remember recovery before applying request exclusions.
+        for (const stream of availableStreams) adapterStatus.set(stream.source, 'ok');
+        const streams = availableStreams.filter((stream) => !exclude.has(stream.source));
+        if (streams.length === 0) {
+            return { statusCode: 404, body: { error: 'No compatible HTTPS movie stream is available', streams: [] } };
+        }
+        return { statusCode: 200, body: { streams } };
+    }
+
+    fastify.get<{ Params: { tmdbId: string }; Querystring: { exclude?: string } }>('/stream/movie/:tmdbId', async (request, reply) => {
+        const { tmdbId } = request.params;
+        if (!isTmdbId(tmdbId)) return reply.code(400).send({ error: 'Invalid TMDB id' });
         try {
-            const response = await sourceService.getMovieSources(String(tmdbId));
-            const streams = response.sources
-                .filter((s: any) => !exclude.includes(s.providerId))
-                .map((s: any) => ({
-                    url: s.url,
-                    headers: s.headers || {},
-                    quality: s.quality || 'Auto',
-                    subtitles: s.subtitles || [],
-                    source: s.providerId,
-                    expiresAt: Date.now() + 30 * 60 * 1000
-                }));
-            return { streams };
-        } catch (error) {
-            console.error('[Stream] Movie stream error:', error);
-            return reply.code(500).send({ error: 'Failed to resolve streams', detail: String(error) });
+            const result = await resolveTvStreams(`/v1/movies/${tmdbId}`, request.query.exclude);
+            return reply.code(result.statusCode).send(result.body);
+        } catch {
+            return reply.code(503).send({ error: 'Stream service could not complete this request. Try again.', streams: [] });
         }
     });
 
-    // TV stream endpoint (compatibility)
-    fastify.get('/stream/tv/:tmdbId/:season/:episode', async (request, reply) => {
-        const tmdbId = Number((request.params as any).tmdbId);
-        const season = Number((request.params as any).season);
-        const episode = Number((request.params as any).episode);
-        if (!tmdbId || !season || !episode) return reply.code(400).send({ error: 'Invalid series or episode id' });
-        
-        const exclude = (request.query as any).exclude?.split(',').map((v: string) => v.trim()).filter(Boolean) || [];
-        
+    fastify.get<{ Params: { tmdbId: string; season: string; episode: string }; Querystring: { exclude?: string } }>('/stream/tv/:tmdbId/:season/:episode', async (request, reply) => {
+        const { tmdbId, season, episode } = request.params;
+        if (!isTmdbId(tmdbId) || !isEpisodeSelection(season, episode)) {
+            return reply.code(400).send({ error: 'Invalid series or episode id' });
+        }
         try {
-            const response = await sourceService.getTVSources(String(tmdbId), season, episode);
-            const streams = response.sources
-                .filter((s: any) => !exclude.includes(s.providerId))
-                .map((s: any) => ({
-                    url: s.url,
-                    headers: s.headers || {},
-                    quality: s.quality || 'Auto',
-                    subtitles: s.subtitles || [],
-                    source: s.providerId,
-                    expiresAt: Date.now() + 30 * 60 * 1000
-                }));
-            return { streams };
-        } catch (error) {
-            console.error('[Stream] TV stream error:', error);
-            return reply.code(500).send({ error: 'Failed to resolve streams', detail: String(error) });
+            const result = await resolveTvStreams(`/v1/tv/${tmdbId}/seasons/${season}/episodes/${episode}`, request.query.exclude);
+            return reply.code(result.statusCode).send(result.body);
+        } catch {
+            return reply.code(503).send({ error: 'Stream service could not complete this request. Try again.', streams: [] });
         }
     });
 
@@ -205,8 +214,9 @@ ${lines.map(pad).join('\n')}
 ${borderBottom}
 `);
 
-    // Keep process alive - prevent exit after main() completes
-    await new Promise(() => {});
 }
 
-main();
+main().catch((error: unknown) => {
+    console.error('[Server] Startup failed:', error instanceof Error ? error.message : 'Unknown startup error');
+    process.exit(1);
+});
