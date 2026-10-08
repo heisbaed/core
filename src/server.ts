@@ -4,6 +4,11 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { knownThirdPartyProxies } from './thirdPartyProxies.js';
 import { streamPatterns } from './streamPatterns.js';
+import { SourceService } from '@omss/framework';
+import { MemoryCacheService } from '@omss/framework';
+import { TMDBService } from '../node_modules/@omss/framework/dist/services/tmdb.service.js';
+import { StremioService } from '../node_modules/@omss/framework/dist/services/stremio.service.js';
+import { ProxyService } from '@omss/framework';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -80,6 +85,83 @@ async function main() {
     await registry.discoverProviders(path.join(__dirname, './providers/'));
 
     await server.start();
+
+    // Add compatibility endpoints for Cine-verse TV app
+    const fastify = server.getInstance();
+    const cache = new MemoryCacheService();
+    const tmdbService = new TMDBService(process.env.TMDB_API_KEY!, cache, 24 * 60 * 60);
+    const proxyService = new ProxyService(streamPatterns);
+    const stremioService = new StremioService([], proxyService);
+    const sourceService = new SourceService(registry, cache, tmdbService, stremioService, { sources: 60 * 60, subtitles: 60 * 60 * 24 });
+    
+    // Health check
+    fastify.get('/health', async () => ({ ok: true, serviceVersion: '1.0.0' }));
+    
+    // Version endpoint with adapter status
+    fastify.get('/version', async () => {
+        const providers = registry.getProviders();
+        const adapters: Record<string, string> = {};
+        for (const p of providers) {
+            adapters[p.id] = 'ok';
+        }
+        return {
+            serviceVersion: '1.0.0',
+            adapters,
+            broken_sources: []
+        };
+    });
+
+    // Movie stream endpoint (compatibility)
+    fastify.get('/stream/movie/:tmdbId', async (request, reply) => {
+        const tmdbId = Number((request.params as any).tmdbId);
+        if (!tmdbId) return reply.code(400).send({ error: 'Invalid TMDB id' });
+        
+        const exclude = (request.query as any).exclude?.split(',').map((v: string) => v.trim()).filter(Boolean) || [];
+        
+        try {
+            const response = await sourceService.getMovieSources(String(tmdbId));
+            const streams = response.sources
+                .filter((s: any) => !exclude.includes(s.providerId))
+                .map((s: any) => ({
+                    url: s.url,
+                    headers: s.headers || {},
+                    quality: s.quality || 'Auto',
+                    subtitles: s.subtitles || [],
+                    source: s.providerId,
+                    expiresAt: Date.now() + 30 * 60 * 1000
+                }));
+            return { streams };
+        } catch (error) {
+            return reply.code(500).send({ error: 'Failed to resolve streams' });
+        }
+    });
+
+    // TV stream endpoint (compatibility)
+    fastify.get('/stream/tv/:tmdbId/:season/:episode', async (request, reply) => {
+        const tmdbId = Number((request.params as any).tmdbId);
+        const season = Number((request.params as any).season);
+        const episode = Number((request.params as any).episode);
+        if (!tmdbId || !season || !episode) return reply.code(400).send({ error: 'Invalid series or episode id' });
+        
+        const exclude = (request.query as any).exclude?.split(',').map((v: string) => v.trim()).filter(Boolean) || [];
+        
+        try {
+            const response = await sourceService.getTVSources(String(tmdbId), season, episode);
+            const streams = response.sources
+                .filter((s: any) => !exclude.includes(s.providerId))
+                .map((s: any) => ({
+                    url: s.url,
+                    headers: s.headers || {},
+                    quality: s.quality || 'Auto',
+                    subtitles: s.subtitles || [],
+                    source: s.providerId,
+                    expiresAt: Date.now() + 30 * 60 * 1000
+                }));
+            return { streams };
+        } catch (error) {
+            return reply.code(500).send({ error: 'Failed to resolve streams' });
+        }
+    });
 
     const publicUrl =
         process.env.PUBLIC_URL ??
