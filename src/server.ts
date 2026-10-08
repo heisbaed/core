@@ -10,6 +10,14 @@ import { TMDBService } from '../node_modules/@omss/framework/dist/services/tmdb.
 import { StremioService } from '../node_modules/@omss/framework/dist/services/stremio.service.js';
 import { ProxyService } from '@omss/framework';
 
+// Global error handlers - prevent process exit on unhandled rejections
+process.on('unhandledRejection', (reason) => {
+    console.error('[FATAL] Unhandled Rejection:', reason);
+});
+process.on('uncaughtException', (error) => {
+    console.error('[FATAL] Uncaught Exception:', error);
+});
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -194,8 +202,9 @@ ${borderTop}
 ${lines.map(pad).join('\n')}
 ${borderBottom}
 `);
+
+    // Keep process alive - prevent exit after main() completes
+    await new Promise(() => {});
 }
 
-main().catch(() => {
-    process.exit(1);
-});
+main();
