@@ -26,8 +26,8 @@ async function main() {
         name: 'CinePro',
         version: '1.0.0',
 
-        // Network
-        host: process.env.HOST ?? 'localhost',
+        // Network - bind to 0.0.0.0 for Render/production
+        host: '0.0.0.0',
         port: Number(process.env.PORT ?? 3000),
         publicUrl: process.env.PUBLIC_URL,
 
@@ -92,9 +92,7 @@ async function main() {
     const registry = server.getRegistry();
     await registry.discoverProviders(path.join(__dirname, './providers/'));
 
-    await server.start();
-
-    // Add compatibility endpoints for Cine-verse TV app
+    // Add compatibility endpoints for Cine-verse TV app BEFORE starting server
     const fastify = server.getInstance();
     const cache = new MemoryCacheService();
     const tmdbService = new TMDBService(process.env.TMDB_API_KEY!, cache, 24 * 60 * 60);
@@ -171,9 +169,11 @@ async function main() {
         }
     });
 
+    await server.start();
+
     const publicUrl =
         process.env.PUBLIC_URL ??
-        `http://${process.env.HOST ?? 'localhost'}:${process.env.PORT ?? 3000}`;
+        `http://${process.env.HOST ?? '0.0.0.0'}:${process.env.PORT ?? 3000}`;
 
     const uiUrl = `https://ui.cinepro.cc/?omssurl=${encodeURIComponent(publicUrl)}`;
 
