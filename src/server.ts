@@ -138,7 +138,8 @@ async function main() {
                 }));
             return { streams };
         } catch (error) {
-            return reply.code(500).send({ error: 'Failed to resolve streams' });
+            console.error('[Stream] Movie stream error:', error);
+            return reply.code(500).send({ error: 'Failed to resolve streams', detail: String(error) });
         }
     });
 
@@ -165,7 +166,8 @@ async function main() {
                 }));
             return { streams };
         } catch (error) {
-            return reply.code(500).send({ error: 'Failed to resolve streams' });
+            console.error('[Stream] TV stream error:', error);
+            return reply.code(500).send({ error: 'Failed to resolve streams', detail: String(error) });
         }
     });
 
