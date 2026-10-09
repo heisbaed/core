@@ -22,7 +22,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 async function main() {
-    const serviceVersion = '1.0.2';
+    const serviceVersion = '1.0.4';
     const port = Number(process.env.PORT ?? 3000);
     const coreBaseUrl = (process.env.PUBLIC_URL ?? process.env.RENDER_EXTERNAL_URL ?? `http://localhost:${port}`).replace(/\/$/, '');
     const server = new OMSSServer({
@@ -97,6 +97,7 @@ async function main() {
     for (const [id, name] of [['movix', 'Movix'], ['frenchstream', 'Frenchstream'], ['wookafr', 'Wookafr']] as const) {
         registry.register(new CommunityProvider(id, name));
     }
+    registry.register(new CommunityProvider('castle', 'Castle', 'nuvio-english-providers'));
 
     const adapterStatus = new Map<string, 'disabled' | 'configured' | 'ok' | 'broken'>();
     for (const provider of registry.getProviders()) {
