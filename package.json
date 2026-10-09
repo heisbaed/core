@@ -1,6 +1,6 @@
 {
     "name": "@cinepro/core",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "type": "module",
     "scripts": {
         "dev": "tsx watch src/server.ts",
@@ -14,7 +14,8 @@
         "@omss/framework": "1.1.26",
         "cheerio": "^1.2.0",
         "crypto-js": "^4.2.0",
-        "dotenv": "^16.4.5"
+        "dotenv": "^16.4.5",
+        "nuvio-providers": "https://codeload.github.com/Gowaru/gowaru-nuvio-providers/tar.gz/eb36f837b2eb2f2d8bf1cab0ec979ad783ab0db0"
     },
     "devDependencies": {
         "@types/crypto-js": "^4.2.2",

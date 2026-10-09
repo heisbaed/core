@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { knownThirdPartyProxies } from './thirdPartyProxies.js';
 import { streamPatterns } from './streamPatterns.js';
+import { CommunityProvider } from './communityProvider.js';
 import {
     decodeProxyDataPreservingUrl,
     isEpisodeSelection,
@@ -21,7 +22,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 async function main() {
-    const serviceVersion = '1.0.1';
+    const serviceVersion = '1.0.2';
     const port = Number(process.env.PORT ?? 3000);
     const coreBaseUrl = (process.env.PUBLIC_URL ?? process.env.RENDER_EXTERNAL_URL ?? `http://localhost:${port}`).replace(/\/$/, '');
     const server = new OMSSServer({
@@ -93,6 +94,9 @@ async function main() {
     // Register providers
     const registry = server.getRegistry();
     await registry.discoverProviders(path.join(__dirname, './providers/'));
+    for (const [id, name] of [['movix', 'Movix'], ['frenchstream', 'Frenchstream'], ['wookafr', 'Wookafr']] as const) {
+        registry.register(new CommunityProvider(id, name));
+    }
 
     const adapterStatus = new Map<string, 'disabled' | 'configured' | 'ok' | 'broken'>();
     for (const provider of registry.getProviders()) {
@@ -102,7 +106,7 @@ async function main() {
         const tvSources = provider.getTVSources.bind(provider);
         provider.getMovieSources = async (media) => {
             try {
-                return await withDeadline(movieSources(media), 15000);
+                return await withDeadline(movieSources(media), provider instanceof CommunityProvider ? 45000 : 15000);
             } catch (error) {
                 adapterStatus.set(provider.id, 'broken');
                 throw error;
@@ -110,7 +114,7 @@ async function main() {
         };
         provider.getTVSources = async (media) => {
             try {
-                return await withDeadline(tvSources(media), 15000);
+                return await withDeadline(tvSources(media), provider instanceof CommunityProvider ? 45000 : 15000);
             } catch (error) {
                 adapterStatus.set(provider.id, 'broken');
                 throw error;
@@ -139,7 +143,7 @@ async function main() {
     // Use the framework's public routes so TV and OMSS share one SourceService,
     // one cache and the same provider validation instead of two divergent copies.
     async function resolveTvStreams(url: string, excludeValue?: string) {
-        const result = await withDeadline(fastify.inject({ method: 'GET', url, headers: { accept: 'application/json' } }), 28000);
+        const result = await withDeadline(fastify.inject({ method: 'GET', url, headers: { accept: 'application/json' } }), 58000);
         if (result.statusCode !== 200) {
             return { statusCode: result.statusCode, body: result.json() };
         }
