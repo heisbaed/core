@@ -53,6 +53,16 @@ export class CommunityProvider extends BaseProvider {
 
     private async resolve(media: ProviderMediaObject): Promise<ProviderResult> {
         const rows = await this.plugin.getStreams(media.tmdbId, media.type, media.s, media.e);
+        let originalLanguage = 'und';
+        if (rows.some(row => /\[OST\]/i.test(row.name || '')) && process.env.TMDB_API_KEY) {
+            try {
+                const response = await fetch(`https://api.themoviedb.org/3/${media.type}/${media.tmdbId}?api_key=${encodeURIComponent(process.env.TMDB_API_KEY)}`, { signal: AbortSignal.timeout(5000) });
+                if (response.ok) {
+                    const metadata = await response.json() as { original_language?: string };
+                    originalLanguage = metadata.original_language || 'und';
+                }
+            } catch { /* Keep unspecified audio unknown if canonical metadata is unavailable. */ }
+        }
         const sources: Source[] = [];
         const subtitles: Subtitle[] = [];
         const subtitleUrls = new Set<string>();
@@ -66,7 +76,7 @@ export class CommunityProvider extends BaseProvider {
                 if (!type) continue;
                 sources.push({ url: this.createProxyUrl(row.url, canonicalPlaybackHeaders(row.headers)), type,
                     quality: row.quality || 'Auto',
-                    audioTracks: [{ language: /^[a-z]{2,3}$/.test(row.language || '') ? row.language! : languageFromLabel(row.name),
+                    audioTracks: [{ language: /^[a-z]{2,3}$/.test(row.language || '') ? row.language! : languageFromLabel(row.name, originalLanguage),
                         label: row.name || this.name }], provider: { id: this.id, name: this.name } });
                 for (const track of row.subtitles || []) {
                     if (!track.url || subtitleUrls.has(track.url)) continue;
@@ -85,7 +95,8 @@ export class CommunityProvider extends BaseProvider {
 }
 
 // Never label an unspecified or shared audio track as English.
-function languageFromLabel(label?: string): string {
+export function languageFromLabel(label?: string, originalLanguage = 'und'): string {
     const language = label?.match(/\[([^\]]+)\]/)?.[1]?.toLowerCase();
+    if (language === 'ost') return /^[a-z]{2,3}$/.test(originalLanguage) ? originalLanguage : 'und';
     return ({ english: 'en', hindi: 'hi', telugu: 'te', tamil: 'ta', malayalam: 'ml', kannada: 'kn', french: 'fr' } as Record<string, string>)[language || ''] || 'und';
 }

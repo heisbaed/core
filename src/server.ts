@@ -22,7 +22,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 async function main() {
-    const serviceVersion = '1.0.4';
+    const serviceVersion = '1.0.5';
     const port = Number(process.env.PORT ?? 3000);
     const coreBaseUrl = (process.env.PUBLIC_URL ?? process.env.RENDER_EXTERNAL_URL ?? `http://localhost:${port}`).replace(/\/$/, '');
     const server = new OMSSServer({
